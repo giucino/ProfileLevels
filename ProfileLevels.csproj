@@ -19,6 +19,12 @@
     <Reference Include="ATAS.Indicators">
       <HintPath>..\..\..\Program Files (x86)\ATAS Platform\ATAS.Indicators.dll</HintPath>
     </Reference>
+    <Reference Include="OFT.Attributes">
+      <HintPath>..\..\..\Program Files (x86)\ATAS Platform\OFT.Attributes.dll</HintPath>
+    </Reference>
+    <Reference Include="Utils.Common">
+      <HintPath>..\..\..\Program Files (x86)\ATAS Platform\Utils.Common.dll</HintPath>
+    </Reference>
     <Reference Include="OFT.Rendering">
       <HintPath>..\..\..\Program Files (x86)\ATAS Platform\OFT.Rendering.dll</HintPath>
     </Reference>

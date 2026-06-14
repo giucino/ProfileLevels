@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Profile Levels (Composite) — Dokumentation</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    background: #14161c; color: #d7dce6;
+    font: 15px/1.6 "Segoe UI", Roboto, Arial, sans-serif;
+    max-width: 880px; margin: 0 auto; padding: 32px 24px 80px;
+  }
+  h1 { font-size: 26px; margin: 0 0 4px; color: #fff; }
+  h2 { font-size: 20px; margin: 34px 0 10px; color: #fff; border-bottom: 1px solid #2a2e38; padding-bottom: 6px; }
+  h3 { font-size: 16px; margin: 22px 0 6px; color: #eaeef6; }
+  .sub { color: #8b94a6; margin: 0 0 20px; }
+  code { background: #20242e; padding: 1px 6px; border-radius: 4px; font-family: Consolas, monospace; font-size: 13px; color: #e6c07b; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #2a2e38; vertical-align: top; }
+  th { color: #fff; background: #1b1e26; }
+  td:first-child { white-space: nowrap; color: #eaeef6; font-weight: 600; }
+  .hvn { color: #e1a82d; font-weight: 600; }
+  .lvn { color: #5fa5eb; font-weight: 600; }
+  .npoc { color: #e065ac; font-weight: 600; }
+  .note { background: #1b2530; border-left: 3px solid #4a90d9; padding: 10px 14px; border-radius: 4px; margin: 14px 0; }
+  .warn { background: #2a2118; border-left: 3px solid #d9a14a; padding: 10px 14px; border-radius: 4px; margin: 14px 0; }
+  ul { margin: 6px 0 6px 0; padding-left: 22px; }
+  li { margin: 4px 0; }
+  .tag { display:inline-block; font-size:12px; background:#2a2e38; color:#9fb0c8; padding:1px 8px; border-radius:10px; }
+</style>
+</head>
+<body>
+
+<h1>Profile Levels (Composite)</h1>
+<p class="sub">Stufe 2 / Modul 2 — volumenprofil-basierte S/R-Zonen aus dem Composite der letzten N Sessions. Für Zeitcharts (M5/M15). Rein informativ, kein Entry-Signal.</p>
+
+<h2>Was der Indikator macht</h2>
+<p>
+Er fasst das Volumenprofil der letzten <em>N</em> Trading-Days zu <strong>einem Composite</strong> zusammen und zieht daraus
+horizontale S/R-Linien. Roter Faden: <strong>Akzeptanz vs. Ablehnung</strong>.
+</p>
+<ul>
+  <li><span class="hvn">HVN</span> — High Volume Node: dicker Knoten = <strong>Akzeptanz</strong>, Fair Value, Magnet.</li>
+  <li><span class="lvn">LVN</span> — Low Volume Node: dünne Zone = <strong>Ablehnung</strong>, schneller Durchlauf; Kante wirkt beim Pullback oft als Verteidigung.</li>
+  <li><span class="npoc">Naked POC</span> — vPOC einer früheren Session, der seither <strong>nicht</strong> berührt wurde (Magnet-Ziel).</li>
+</ul>
+<div class="note">
+vPOC, VAH und VAL zeichnet der Trader bei Bedarf selbst (eigenes Profil-Tool) — daher bewusst <strong>nicht</strong> in
+diesem Indikator. So bleibt die Kalibrierung auf HVN/LVN fokussiert.
+</div>
+
+<h2>Wie HVN/LVN gefunden werden</h2>
+<ol>
+  <li>Volumen je Preis über die letzten <em>N</em> Tage aggregieren → ein Composite-Profil.</li>
+  <li>Profil glätten (gegen Tick-Rauschen).</li>
+  <li><span class="hvn">HVN</span> = zusammenhängende Läufe <strong>über</strong> der HVN-Schwelle (% vom Profil-Maximum) → Peak je Lauf.</li>
+  <li><span class="lvn">LVN</span> = echte Täler <strong>unter</strong> der LVN-Schwelle (höhere Knoten auf beiden Seiten) → tiefster Punkt je Tal.</li>
+  <li>Je Typ werden nur die <strong>stärksten N</strong> behalten (HVN = größtes Volumen, LVN = dünnste Täler); ein <strong>Mindestabstand</strong> verschmilzt dicht beieinander liegende Knoten zu einer Zone.</li>
+</ol>
+
+<h2>Naked / Virgin POC</h2>
+<p>
+Für jeden abgeschlossenen Tag wird dessen POC (Preis mit dem meisten Volumen) bestimmt. Er bleibt <strong>„naked"</strong>,
+<strong>solange der Preis ihn seit dem Entstehungstag nicht wieder berührt hat</strong>. Sobald ein späterer Bar den
+POC-Preis durchläuft → nicht mehr naked → <strong>Linie verschwindet</strong>.
+</p>
+<ul>
+  <li>Die Linie ist ein <strong>Ray ab dem Print-Punkt</strong> (letzter Bar des Entstehungstags auf dem POC) nach rechts.</li>
+  <li>Nutzung als <strong>Magnet-Ziel</strong>: der Markt kehrt mit hoher Wahrscheinlichkeit zu einem unberührten POC zurück.</li>
+</ul>
+
+<div class="warn">
+<strong>Level = das WO, nicht das OB.</strong> Die Zonen sagen „hier ist Akzeptanz/Ablehnung/ein offenes Ziel" — ob ein
+Level hält oder bricht, entscheidet sich am Orderflow beim Re-Test, nicht an der Linie.
+</div>
+
+<h2>Empfohlener Chart</h2>
+<p>
+<strong>Zeitchart M5/M15.</strong> Das Composite-Profil ist bar-typ-unabhängig, aber der Zeitchart liefert die sauberen
+Session-Grenzen für die Tageszuordnung (vor allem für den Naked POC).
+</p>
+
+<h2>Einstellungen</h2>
+
+<h3>Profil</h3>
+<table>
+  <tr><th>Einstellung</th><th>Bedeutung</th></tr>
+  <tr><td>Sessions (Composite-Tage)</td><td>Über so viele Trading-Days wird das Volumenprofil zusammengefasst. Mehr = größere, trägere Zonen.</td></tr>
+  <tr><td>HVN-Schwelle (% vom Max)</td><td>Ein Knoten gilt als HVN, wenn sein geglättetes Volumen über diesem Prozentsatz des Profil-Maximums liegt.</td></tr>
+  <tr><td>LVN-Schwelle (% vom Max)</td><td>Ein Tal gilt als LVN, wenn sein Volumen unter diesem Prozentsatz liegt.</td></tr>
+  <tr><td>Glättung (Ticks)</td><td>Glättungsbreite des Profils vor der HVN/LVN-Suche. Höher = ruhiger.</td></tr>
+  <tr><td>Tagesgrenze Stunde/Minute</td><td>Uhrzeit des Trading-Day-Rollovers. Default 0:00 ≈ CME-Index-Futures-Rollover in DE-Lokalzeit; an die Zeitzone des Charts anpassen.</td></tr>
+  <tr><td>Max. HVN/LVN je Typ</td><td>Wie viele HVN bzw. LVN max. gezeichnet werden (stärkste zuerst).</td></tr>
+  <tr><td>Mindestabstand (Punkte)</td><td>Zwei Linien gleichen Typs dürfen nicht näher liegen → verschmilzt enge Knoten zu einer Zone. 0 = aus.</td></tr>
+</table>
+
+<h3>Anzeige / Darstellung / Farben</h3>
+<table>
+  <tr><th>Einstellung</th><th>Bedeutung</th></tr>
+  <tr><td>HVN / LVN / Naked POC anzeigen</td><td>Einzelne Typen ein-/ausblenden.</td></tr>
+  <tr><td>Max. Naked POCs</td><td>Wie viele der jüngsten unberührten Vortages-POCs gehalten werden.</td></tr>
+  <tr><td>Linienbreite / Labels / Schriftgröße</td><td>Darstellung der Linien und Labels (rechts an der Preisachse).</td></tr>
+  <tr><td>Farben</td><td>Je Level-Typ (HVN / LVN / Naked POC).</td></tr>
+</table>
+
+<h2>Kalibrierung</h2>
+<ol>
+  <li><strong>Max. HVN/LVN je Typ</strong> auf 3–5 → nur die dominanten Zonen.</li>
+  <li><strong>Mindestabstand</strong> setzen (NQ ~50–80), bis enge Paare zu einer Zone verschmelzen.</li>
+  <li><strong>HVN-/LVN-Schwelle %</strong> steuert, wie wählerisch ein Knoten qualifizieren muss.</li>
+  <li>Gegen ein echtes Volumenprofil prüfen: HVN auf den dicken Knoten, LVN in den Lücken?</li>
+</ol>
+
+<p class="sub" style="margin-top:40px;">
+<span class="tag">Eigenentwicklung</span> Teil eines mehrstufigen ATAS-Orderflow-Projekts (Modul 2 — Auktions-Zonen). Gegenstück: Level Marker (Tick-Chart).
+</p>
+
+</body>
+</html>

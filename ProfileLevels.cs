@@ -5,12 +5,14 @@ using System.ComponentModel.DataAnnotations;
 using System.Drawing;
 using System.Linq;
 using ATAS.Indicators;
+using OFT.Attributes;
 using OFT.Rendering.Context;
 using OFT.Rendering.Tools;
 
 namespace ProfileLevels
 {
     [DisplayName("Profile Levels (Composite)")]
+    [HelpLink("https://giucino.github.io/ProfileLevels/ProfileLevels_Doku.html")]
     [Description("Stufe 2 / Modul 2 — zieht volumenprofil-basierte S/R-Linien aus dem Composite " +
                  "der letzten N Sessions: HVN (Akzeptanz/Magnet), LVN (duenne Zonen) und " +
                  "Naked/Virgin POC (unberuehrte Vortages-POCs als Magnet-Ziele). " +
@@ -77,6 +79,7 @@ namespace ProfileLevels
         private readonly List<Dictionary<decimal, decimal>> _history = new();
         private Dictionary<decimal, decimal> _current = new();
         private DateTime _curDate = DateTime.MinValue;
+        private int _curSessionStartBar = -1;   // Bar, an dem die aktuelle Session begann
 
         private readonly List<NakedPoc> _nakedPocs = new();
         private readonly List<Line> _lines = new();
@@ -236,6 +239,7 @@ namespace ProfileLevels
             _curDate = DateTime.MinValue;
             _nakedPocs.Clear();
             _lines.Clear();
+            _curSessionStartBar = -1;
             _lastProcessedBar = -1;
             _tickEstimate = 0m;
         }
@@ -263,14 +267,18 @@ namespace ProfileLevels
                     decimal dayPoc = PocOf(_current);
                     if (dayPoc > 0m)
                     {
-                        // Ursprung = letzter Bar der abgeschlossenen Session (bar = erster Bar des neuen Tages).
-                        _nakedPocs.Add(new NakedPoc(dayPoc, _curDate, bar - 1));
+                        // Ursprung = LETZTER Bar der Session, dessen Range den POC einschloss
+                        // -> der Ray startet dort, wo der Preis zuletzt auf dem POC war
+                        // (nicht am Session-Schluss, der an Trendtagen weit weg liegt).
+                        int origin = FindPocOriginBar(_curSessionStartBar, bar - 1, dayPoc);
+                        _nakedPocs.Add(new NakedPoc(dayPoc, _curDate, origin));
                         while (_nakedPocs.Count > _maxNakedPocs)
                             _nakedPocs.RemoveAt(0);
                     }
                 }
                 _current = new Dictionary<decimal, decimal>();
                 _curDate = date;
+                _curSessionStartBar = bar;
             }
 
             // Footprint in das aktuelle Tagesprofil aggregieren.
@@ -357,6 +365,20 @@ namespace ProfileLevels
             foreach (var kv in hist)
                 if (kv.Value > maxVol) { maxVol = kv.Value; poc = kv.Key; }
             return poc;
+        }
+
+        // Letzter Bar im Bereich [startBar, endBar], dessen High/Low den POC-Preis
+        // einschloss -> dort war der Preis zuletzt auf dem POC (Ray-Start des nPOC).
+        private int FindPocOriginBar(int startBar, int endBar, decimal poc)
+        {
+            if (startBar < 0) startBar = 0;
+            for (int b = endBar; b >= startBar; b--)
+            {
+                var cc = GetCandle(b);
+                if (cc != null && cc.Low <= poc && poc <= cc.High)
+                    return b;
+            }
+            return endBar;   // Fallback: Session-Schluss
         }
 
         // Ordnet einen Zeitpunkt dem Trading-Day zu, der bei der Tagesgrenze beginnt.
@@ -541,7 +563,8 @@ namespace ProfileLevels
                     {
                         string label = LabelOf(ln.Kind);
                         var sz = context.MeasureString(label, _font);
-                        int labelX = Math.Min(x1 + 3, region.Right - sz.Width - 3);
+                        // Label rechts (knapp vor der Preisachse).
+                        int labelX = region.Right - sz.Width - 3;
                         context.DrawString(label, _font, color, labelX, y - sz.Height - 1);
                     }
                     catch { /* Label diesmal weglassen */ }
