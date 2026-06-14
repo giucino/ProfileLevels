@@ -20,10 +20,13 @@ namespace ProfileLevels
         // ─────────────────────────────────────────────────────────────────
         //  EINSTELLUNGEN — Profil
         // ─────────────────────────────────────────────────────────────────
-        private int _sessions = 5;             // Composite ueber die letzten N Kalendertage (inkl. heute)
+        private int _sessions = 5;             // Composite ueber die letzten N Trading-Days (inkl. heute)
         private int _hvnRatioPct = 70;         // HVN-Schwelle als % des Profil-Maximums
         private int _lvnRatioPct = 20;         // LVN-Schwelle als % des Profil-Maximums
         private int _smoothing = 3;            // Glaettung in Ticks
+
+        private int _dayStartHour = 0;         // Tagesgrenze (Rollover-Stunde) - Default Mitternacht
+        private int _dayStartMinute = 0;
 
         // ─────────────────────────────────────────────────────────────────
         //  EINSTELLUNGEN — was anzeigen
@@ -106,6 +109,18 @@ namespace ProfileLevels
             Description = "Glaettungsbreite des Profils in Ticks vor der HVN/LVN-Suche. Hoeher = ruhiger.")]
         [Range(0, 30)]
         public int Smoothing { get => _smoothing; set { _smoothing = Math.Clamp(value, 0, 30); RecalculateValues(); } }
+
+        [Display(Name = "Tagesgrenze Stunde", GroupName = "Profil", Order = 5,
+            Description = "Uhrzeit (Stunde), zu der ein neuer Profil-Tag beginnt = der Trading-Day-Rollover. " +
+                          "Default 0 (Mitternacht): bei einem Chart in DE-Lokalzeit entspricht das ~dem CME-Index-" +
+                          "Futures-Rollover (18:00 ET). An die Zeitzone deines Charts anpassen, falls noetig.")]
+        [Range(0, 23)]
+        public int DayStartHour { get => _dayStartHour; set { _dayStartHour = Math.Clamp(value, 0, 23); RecalculateValues(); } }
+
+        [Display(Name = "Tagesgrenze Minute", GroupName = "Profil", Order = 6,
+            Description = "Minute der Tagesgrenze (zusammen mit 'Tagesgrenze Stunde').")]
+        [Range(0, 59)]
+        public int DayStartMinute { get => _dayStartMinute; set { _dayStartMinute = Math.Clamp(value, 0, 59); RecalculateValues(); } }
 
         // ─────────────────────────────────────────────────────────────────
         //  PROPERTIES — Anzeige
@@ -234,7 +249,7 @@ namespace ProfileLevels
                 UpdateTickEstimate(c);
 
             // Tageswechsel -> aktuelles Tagesprofil einfrieren.
-            var date = c.Time.Date;
+            var date = SessionDate(c.Time);
             if (date != _curDate)
             {
                 if (_curDate != DateTime.MinValue && _current.Count > 0)
@@ -341,6 +356,14 @@ namespace ProfileLevels
             foreach (var kv in hist)
                 if (kv.Value > maxVol) { maxVol = kv.Value; poc = kv.Key; }
             return poc;
+        }
+
+        // Ordnet einen Zeitpunkt dem Trading-Day zu, der bei der Tagesgrenze beginnt.
+        // Bars vor der Grenze gehoeren noch zum vorherigen Trading-Day.
+        private DateTime SessionDate(DateTime t)
+        {
+            var start = new TimeSpan(_dayStartHour, _dayStartMinute, 0);
+            return t.TimeOfDay >= start ? t.Date : t.Date.AddDays(-1);
         }
 
         private void AddLine(decimal price, LevelKind kind)
