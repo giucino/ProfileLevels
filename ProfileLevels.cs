@@ -51,13 +51,13 @@ namespace ProfileLevels
         // ─────────────────────────────────────────────────────────────────
         //  STATE
         // ─────────────────────────────────────────────────────────────────
+        private enum LevelKind { Poc, Vah, Val, Hvn, Lvn, NakedPoc }
+
         private readonly struct Line
         {
             public readonly decimal Price;
-            public readonly string Label;
-            public readonly Color Color;
-            public Line(decimal price, string label, Color color)
-            { Price = price; Label = label; Color = color; }
+            public readonly LevelKind Kind;
+            public Line(decimal price, LevelKind kind) { Price = price; Kind = kind; }
         }
 
         // Naked/Virgin POC: POC eines abgeschlossenen Tages, der seither nicht beruehrt wurde.
@@ -129,7 +129,7 @@ namespace ProfileLevels
         [Display(Name = "Naked POC anzeigen", GroupName = "Anzeige", Order = 14,
             Description = "vPOC einer frueheren Session, der seither NICHT wieder beruehrt wurde (starkes Magnet-Ziel). " +
                           "Verschwindet automatisch, sobald der Preis ihn antippt.")]
-        public bool ShowNakedPoc { get => _showNakedPoc; set { _showNakedPoc = value; RecalculateValues(); } }
+        public bool ShowNakedPoc { get => _showNakedPoc; set { _showNakedPoc = value; RedrawChart(); } }
 
         [Display(Name = "Max. Naked POCs", GroupName = "Anzeige", Order = 15,
             Description = "Wie viele der juengsten unberuehrten Vortages-POCs maximal gehalten werden.")]
@@ -320,22 +320,19 @@ namespace ProfileLevels
                 }
             }
 
-            // Reihenfolge = Zeichen-Reihenfolge; Wichtigeres zuletzt (liegt oben).
+            // Alle Typen IMMER bauen; Sichtbarkeit + Farbe werden erst beim Zeichnen
+            // aus den aktuellen Einstellungen aufgeloest -> Haken/Farben wirken sofort
+            // (ohne Neuberechnung). Reihenfolge = Zeichen-Reihenfolge (Wichtiges zuletzt).
             if (sm != null)
             {
-                if (_showLvn) AddLvnLines(sm, n, minP, tick);
-                if (_showHvn) AddHvnLines(sm, n, minP, tick, poc);
+                AddLvnLines(sm, n, minP, tick);
+                AddHvnLines(sm, n, minP, tick, poc);
             }
-            if (_showVa)
-            {
-                AddLine(vah, "VAH", _colorVa);
-                AddLine(val, "VAL", _colorVa);
-            }
-            if (_showNakedPoc)
-                foreach (var np in _nakedPocs)
-                    AddLine(np.Price, "nPOC", _colorNakedPoc);
-            if (_showPoc)
-                AddLine(poc, "POC", _colorPoc);
+            AddLine(vah, LevelKind.Vah);
+            AddLine(val, LevelKind.Val);
+            foreach (var np in _nakedPocs)
+                AddLine(np.Price, LevelKind.NakedPoc);
+            AddLine(poc, LevelKind.Poc);
         }
 
         private static decimal PocOf(Dictionary<decimal, decimal> hist)
@@ -346,8 +343,41 @@ namespace ProfileLevels
             return poc;
         }
 
-        private void AddLine(decimal price, string label, Color color)
-            => _lines.Add(new Line(price, label, color));
+        private void AddLine(decimal price, LevelKind kind)
+            => _lines.Add(new Line(price, kind));
+
+        private bool IsVisible(LevelKind k) => k switch
+        {
+            LevelKind.Poc => _showPoc,
+            LevelKind.Vah => _showVa,
+            LevelKind.Val => _showVa,
+            LevelKind.Hvn => _showHvn,
+            LevelKind.Lvn => _showLvn,
+            LevelKind.NakedPoc => _showNakedPoc,
+            _ => true
+        };
+
+        private Color ColorOf(LevelKind k) => k switch
+        {
+            LevelKind.Poc => _colorPoc,
+            LevelKind.Vah => _colorVa,
+            LevelKind.Val => _colorVa,
+            LevelKind.Hvn => _colorHvn,
+            LevelKind.Lvn => _colorLvn,
+            LevelKind.NakedPoc => _colorNakedPoc,
+            _ => Color.White
+        };
+
+        private static string LabelOf(LevelKind k) => k switch
+        {
+            LevelKind.Poc => "POC",
+            LevelKind.Vah => "VAH",
+            LevelKind.Val => "VAL",
+            LevelKind.Hvn => "HVN",
+            LevelKind.Lvn => "LVN",
+            LevelKind.NakedPoc => "nPOC",
+            _ => ""
+        };
 
         // HVN = zusammenhaengender Lauf UEBER der Schwelle -> Peak je Lauf.
         private void AddHvnLines(double[] sm, int n, decimal minP, decimal tick, decimal poc)
@@ -369,7 +399,7 @@ namespace ProfileLevels
 
                 decimal price = minP + (decimal)mx * tick;
                 if (Math.Abs(price - poc) > tick * 2m)   // POC nicht doppeln
-                    AddLine(price, "HVN", _colorHvn);
+                    AddLine(price, LevelKind.Hvn);
             }
         }
 
@@ -397,7 +427,7 @@ namespace ProfileLevels
                 if (leftMax <= mv || rightMax <= mv) continue;   // nur echte Taeler
 
                 decimal price = minP + (decimal)mn * tick;
-                AddLine(price, "LVN", _colorLvn);
+                AddLine(price, LevelKind.Lvn);
             }
         }
 
@@ -480,18 +510,23 @@ namespace ProfileLevels
 
             foreach (var ln in _lines)
             {
+                if (!IsVisible(ln.Kind))
+                    continue;
+
                 int y;
                 try { y = cont.GetYByPrice(ln.Price, false); }
                 catch { continue; }
 
-                context.DrawLine(new RenderPen(ln.Color, _lineWidth), region.Left, y, region.Right, y);
+                var color = ColorOf(ln.Kind);
+                context.DrawLine(new RenderPen(color, _lineWidth), region.Left, y, region.Right, y);
 
-                if (_showLabels && !string.IsNullOrEmpty(ln.Label))
+                if (_showLabels)
                 {
                     try
                     {
-                        var sz = context.MeasureString(ln.Label, _font);
-                        context.DrawString(ln.Label, _font, ln.Color, region.Left + 3, y - sz.Height - 1);
+                        string label = LabelOf(ln.Kind);
+                        var sz = context.MeasureString(label, _font);
+                        context.DrawString(label, _font, color, region.Left + 3, y - sz.Height - 1);
                     }
                     catch { /* Label diesmal weglassen */ }
                 }
