@@ -134,9 +134,10 @@ namespace ProfileLevels
         public int MaxNodes { get => _maxNodes; set { _maxNodes = Math.Max(1, value); RecalculateValues(); } }
 
         [Display(Name = "Mindestabstand (Punkte)", GroupName = "Profil", Order = 8,
-            Description = "Zwei Linien gleichen Typs (HVN/LVN/Naked POC) duerfen nicht naeher als dieser " +
-                          "Preisabstand liegen - die staerkere bzw. juengere bleibt. Fasst dicht beieinander " +
-                          "liegende Knoten zu einer Zone zusammen. 0 = aus. Fuer NQ ~50-80, fuer ES ~15-25.")]
+            Description = "Zwei HVN bzw. zwei LVN duerfen nicht naeher als dieser Preisabstand liegen - die " +
+                          "staerkere bleibt. Fasst dicht beieinander liegende Knoten zu einer Zone zusammen. " +
+                          "Gilt NICHT fuer Naked POC (jeder unberuehrte POC bleibt ein eigenes Level). " +
+                          "0 = aus. Fuer NQ ~50-80, fuer ES ~15-25.")]
         [Range(0, 100000)]
         public decimal MinSeparation { get => _minSep; set { _minSep = Math.Max(0m, value); RecalculateValues(); } }
 
@@ -350,13 +351,9 @@ namespace ProfileLevels
                 AddLvnLines(sm, n, minP, tick);
                 AddHvnLines(sm, n, minP, tick);
             }
-            var nakedPicked = new List<decimal>();
-            foreach (var np in _nakedPocs.OrderByDescending(x => x.Date))  // juengste zuerst
-            {
-                if (_minSep > 0m && nakedPicked.Any(p => Math.Abs(p - np.Price) < _minSep)) continue;
-                nakedPicked.Add(np.Price);
+            // Naked POCs: KEIN Mindestabstand - jeder unberuehrte POC ist ein eigenes Level.
+            foreach (var np in _nakedPocs)
                 _lines.Add(new Line(np.Price, LevelKind.NakedPoc, np.OriginBar));   // Ray ab Ursprung
-            }
         }
 
         private static decimal PocOf(Dictionary<decimal, decimal> hist)
