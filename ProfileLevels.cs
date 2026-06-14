@@ -12,7 +12,7 @@ namespace ProfileLevels
 {
     [DisplayName("Profile Levels (Composite)")]
     [Description("Stufe 2 / Modul 2 — zieht volumenprofil-basierte S/R-Linien aus dem Composite " +
-                 "der letzten N Sessions: vPOC, VAH/VAL, HVN (Akzeptanz/Magnet), LVN (duenne Zonen) und " +
+                 "der letzten N Sessions: HVN (Akzeptanz/Magnet), LVN (duenne Zonen) und " +
                  "Naked/Virgin POC (unberuehrte Vortages-POCs als Magnet-Ziele). " +
                  "Fuer Zeitcharts (M5/M15) gedacht. Rein informativ, kein Signal.")]
     public class ProfileLevels : Indicator
@@ -27,12 +27,12 @@ namespace ProfileLevels
 
         private int _dayStartHour = 0;         // Tagesgrenze (Rollover-Stunde) - Default Mitternacht
         private int _dayStartMinute = 0;
+        private int _maxNodes = 5;             // max. HVN bzw. LVN je Typ (staerkste zuerst)
+        private decimal _minSep = 0m;          // Mindestabstand zwischen Linien gleichen Typs (Punkte)
 
         // ─────────────────────────────────────────────────────────────────
         //  EINSTELLUNGEN — was anzeigen
         // ─────────────────────────────────────────────────────────────────
-        private bool _showPoc = true;
-        private bool _showVa = true;
         private bool _showHvn = true;
         private bool _showLvn = true;
         private bool _showNakedPoc = true;
@@ -45,8 +45,6 @@ namespace ProfileLevels
         private bool _showLabels = true;
         private int _fontSize = 11;
 
-        private Color _colorPoc = Color.FromArgb(240, 240, 200, 40);   // vPOC
-        private Color _colorVa = Color.FromArgb(200, 150, 160, 185);   // VAH/VAL
         private Color _colorHvn = Color.FromArgb(225, 235, 150, 45);   // HVN
         private Color _colorLvn = Color.FromArgb(225, 90, 165, 235);   // LVN
         private Color _colorNakedPoc = Color.FromArgb(235, 230, 90, 200);  // naked/virgin POC
@@ -54,13 +52,15 @@ namespace ProfileLevels
         // ─────────────────────────────────────────────────────────────────
         //  STATE
         // ─────────────────────────────────────────────────────────────────
-        private enum LevelKind { Poc, Vah, Val, Hvn, Lvn, NakedPoc }
+        private enum LevelKind { Hvn, Lvn, NakedPoc }
 
         private readonly struct Line
         {
             public readonly decimal Price;
             public readonly LevelKind Kind;
-            public Line(decimal price, LevelKind kind) { Price = price; Kind = kind; }
+            public readonly int OriginBar;   // -1 = volle Breite (HVN/LVN); sonst Ray ab diesem Bar (nPOC)
+            public Line(decimal price, LevelKind kind, int originBar = -1)
+            { Price = price; Kind = kind; OriginBar = originBar; }
         }
 
         // Naked/Virgin POC: POC eines abgeschlossenen Tages, der seither nicht beruehrt wurde.
@@ -68,7 +68,9 @@ namespace ProfileLevels
         {
             public readonly decimal Price;
             public readonly DateTime Date;
-            public NakedPoc(decimal price, DateTime date) { Price = price; Date = date; }
+            public readonly int OriginBar;   // Bar, an dem der nPOC entstand (Session-Ende)
+            public NakedPoc(decimal price, DateTime date, int originBar)
+            { Price = price; Date = date; OriginBar = originBar; }
         }
 
         // Abgeschlossene Tagesprofile (aelteste zuerst) + das aktuelle Tagesprofil.
@@ -122,17 +124,22 @@ namespace ProfileLevels
         [Range(0, 59)]
         public int DayStartMinute { get => _dayStartMinute; set { _dayStartMinute = Math.Clamp(value, 0, 59); RecalculateValues(); } }
 
+        [Display(Name = "Max. HVN/LVN je Typ", GroupName = "Profil", Order = 7,
+            Description = "Wie viele HVN bzw. LVN maximal gezeichnet werden. Behalten werden die STAERKSTEN " +
+                          "(HVN = groesstes Volumen, LVN = duennste Taeler). Niedrig = nur die dominanten Zonen.")]
+        [Range(1, 50)]
+        public int MaxNodes { get => _maxNodes; set { _maxNodes = Math.Max(1, value); RecalculateValues(); } }
+
+        [Display(Name = "Mindestabstand (Punkte)", GroupName = "Profil", Order = 8,
+            Description = "Zwei Linien gleichen Typs (HVN/LVN/Naked POC) duerfen nicht naeher als dieser " +
+                          "Preisabstand liegen - die staerkere bzw. juengere bleibt. Fasst dicht beieinander " +
+                          "liegende Knoten zu einer Zone zusammen. 0 = aus. Fuer NQ ~50-80, fuer ES ~15-25.")]
+        [Range(0, 100000)]
+        public decimal MinSeparation { get => _minSep; set { _minSep = Math.Max(0m, value); RecalculateValues(); } }
+
         // ─────────────────────────────────────────────────────────────────
         //  PROPERTIES — Anzeige
         // ─────────────────────────────────────────────────────────────────
-        [Display(Name = "vPOC anzeigen", GroupName = "Anzeige", Order = 10,
-            Description = "Point of Control des Composite-Profils (Preis mit dem meisten Volumen).")]
-        public bool ShowPoc { get => _showPoc; set { _showPoc = value; RedrawChart(); } }
-
-        [Display(Name = "VAH/VAL anzeigen", GroupName = "Anzeige", Order = 11,
-            Description = "Value-Area-Grenzen (70%-Methode): oben (VAH) und unten (VAL).")]
-        public bool ShowVa { get => _showVa; set { _showVa = value; RedrawChart(); } }
-
         [Display(Name = "HVN anzeigen", GroupName = "Anzeige", Order = 12,
             Description = "High Volume Nodes (Akzeptanz/Magnet-Zonen).")]
         public bool ShowHvn { get => _showHvn; set { _showHvn = value; RedrawChart(); } }
@@ -155,24 +162,18 @@ namespace ProfileLevels
         //  PROPERTIES — Darstellung
         // ─────────────────────────────────────────────────────────────────
         [Display(Name = "Linienbreite", GroupName = "Darstellung", Order = 20,
-            Description = "Dicke der Linien in Pixeln.")]
-        [Range(1, 8)]
-        public int LineWidth { get => _lineWidth; set { _lineWidth = Math.Clamp(value, 1, 8); RedrawChart(); } }
+            Description = "Dicke der Linien in Pixeln (1-20).")]
+        [Range(1, 20)]
+        public int LineWidth { get => _lineWidth; set { _lineWidth = Math.Clamp(value, 1, 20); RedrawChart(); } }
 
         [Display(Name = "Labels anzeigen", GroupName = "Darstellung", Order = 21,
-            Description = "Blendet die Text-Labels (POC, VAH, VAL, HVN, LVN) ein/aus.")]
+            Description = "Blendet die Text-Labels (HVN, LVN, nPOC) ein/aus.")]
         public bool ShowLabels { get => _showLabels; set { _showLabels = value; RedrawChart(); } }
 
         [Display(Name = "Schriftgroesse", GroupName = "Darstellung", Order = 22,
             Description = "Schriftgroesse der Labels.")]
         [Range(8, 24)]
         public int FontSize { get => _fontSize; set { _fontSize = Math.Clamp(value, 8, 24); BuildFonts(); RedrawChart(); } }
-
-        [Display(Name = "Farbe vPOC", GroupName = "Farben", Order = 30)]
-        public Color ColorPoc { get => _colorPoc; set { _colorPoc = value; RedrawChart(); } }
-
-        [Display(Name = "Farbe VAH/VAL", GroupName = "Farben", Order = 31)]
-        public Color ColorVa { get => _colorVa; set { _colorVa = value; RedrawChart(); } }
 
         [Display(Name = "Farbe HVN", GroupName = "Farben", Order = 32)]
         public Color ColorHvn { get => _colorHvn; set { _colorHvn = value; RedrawChart(); } }
@@ -262,7 +263,8 @@ namespace ProfileLevels
                     decimal dayPoc = PocOf(_current);
                     if (dayPoc > 0m)
                     {
-                        _nakedPocs.Add(new NakedPoc(dayPoc, _curDate));
+                        // Ursprung = letzter Bar der abgeschlossenen Session (bar = erster Bar des neuen Tages).
+                        _nakedPocs.Add(new NakedPoc(dayPoc, _curDate, bar - 1));
                         while (_nakedPocs.Count > _maxNakedPocs)
                             _nakedPocs.RemoveAt(0);
                     }
@@ -303,9 +305,6 @@ namespace ProfileLevels
             if (comp.Count < 5)
                 return;
 
-            // vPOC + Value Area (70%).
-            ComputeValueArea(comp, out decimal poc, out decimal vah, out decimal val);
-
             // Kontinuierliches, geglaettetes Profil fuer HVN/LVN.
             decimal tick = _tickEstimate > 0m ? _tickEstimate : InferTick(comp.Keys);
             decimal minP = comp.Keys.Min();
@@ -341,13 +340,15 @@ namespace ProfileLevels
             if (sm != null)
             {
                 AddLvnLines(sm, n, minP, tick);
-                AddHvnLines(sm, n, minP, tick, poc);
+                AddHvnLines(sm, n, minP, tick);
             }
-            AddLine(vah, LevelKind.Vah);
-            AddLine(val, LevelKind.Val);
-            foreach (var np in _nakedPocs)
-                AddLine(np.Price, LevelKind.NakedPoc);
-            AddLine(poc, LevelKind.Poc);
+            var nakedPicked = new List<decimal>();
+            foreach (var np in _nakedPocs.OrderByDescending(x => x.Date))  // juengste zuerst
+            {
+                if (_minSep > 0m && nakedPicked.Any(p => Math.Abs(p - np.Price) < _minSep)) continue;
+                nakedPicked.Add(np.Price);
+                _lines.Add(new Line(np.Price, LevelKind.NakedPoc, np.OriginBar));   // Ray ab Ursprung
+            }
         }
 
         private static decimal PocOf(Dictionary<decimal, decimal> hist)
@@ -369,11 +370,26 @@ namespace ProfileLevels
         private void AddLine(decimal price, LevelKind kind)
             => _lines.Add(new Line(price, kind));
 
+        // Waehlt aus Kandidaten die staerksten (max. _maxNodes) und haelt dabei den
+        // Mindestabstand ein -> dicht beieinander liegende Knoten verschmelzen zu einem.
+        private void AddNodesWithSeparation(List<(decimal price, double vol)> cand, bool strongestHigh, LevelKind kind)
+        {
+            var ordered = strongestHigh
+                ? cand.OrderByDescending(x => x.vol)
+                : cand.OrderBy(x => x.vol);
+
+            var picked = new List<decimal>();
+            foreach (var c in ordered)
+            {
+                if (picked.Count >= _maxNodes) break;
+                if (_minSep > 0m && picked.Any(p => Math.Abs(p - c.price) < _minSep)) continue;
+                picked.Add(c.price);
+                AddLine(c.price, kind);
+            }
+        }
+
         private bool IsVisible(LevelKind k) => k switch
         {
-            LevelKind.Poc => _showPoc,
-            LevelKind.Vah => _showVa,
-            LevelKind.Val => _showVa,
             LevelKind.Hvn => _showHvn,
             LevelKind.Lvn => _showLvn,
             LevelKind.NakedPoc => _showNakedPoc,
@@ -382,9 +398,6 @@ namespace ProfileLevels
 
         private Color ColorOf(LevelKind k) => k switch
         {
-            LevelKind.Poc => _colorPoc,
-            LevelKind.Vah => _colorVa,
-            LevelKind.Val => _colorVa,
             LevelKind.Hvn => _colorHvn,
             LevelKind.Lvn => _colorLvn,
             LevelKind.NakedPoc => _colorNakedPoc,
@@ -393,9 +406,6 @@ namespace ProfileLevels
 
         private static string LabelOf(LevelKind k) => k switch
         {
-            LevelKind.Poc => "POC",
-            LevelKind.Vah => "VAH",
-            LevelKind.Val => "VAL",
             LevelKind.Hvn => "HVN",
             LevelKind.Lvn => "LVN",
             LevelKind.NakedPoc => "nPOC",
@@ -403,12 +413,14 @@ namespace ProfileLevels
         };
 
         // HVN = zusammenhaengender Lauf UEBER der Schwelle -> Peak je Lauf.
-        private void AddHvnLines(double[] sm, int n, decimal minP, decimal tick, decimal poc)
+        // Es werden nur die staerksten _maxNodes Peaks (groesstes Volumen) behalten.
+        private void AddHvnLines(double[] sm, int n, decimal minP, decimal tick)
         {
             double maxV = sm.Max();
             if (maxV <= 0) return;
             double thr = _hvnRatioPct / 100.0 * maxV;
 
+            var cand = new List<(decimal price, double vol)>();
             int i = 0;
             while (i < n)
             {
@@ -421,18 +433,20 @@ namespace ProfileLevels
                 for (int j = rs; j <= re; j++) if (sm[j] > mv) { mv = sm[j]; mx = j; }
 
                 decimal price = minP + (decimal)mx * tick;
-                if (Math.Abs(price - poc) > tick * 2m)   // POC nicht doppeln
-                    AddLine(price, LevelKind.Hvn);
+                cand.Add((price, mv));
             }
+            AddNodesWithSeparation(cand, true, LevelKind.Hvn);
         }
 
         // LVN = zusammenhaengender Lauf UNTER der Schwelle, echtes Tal -> tiefster Punkt.
+        // Es werden nur die ausgepraegtesten _maxNodes Taeler (geringstes Volumen) behalten.
         private void AddLvnLines(double[] sm, int n, decimal minP, decimal tick)
         {
             double maxV = sm.Max();
             if (maxV <= 0) return;
             double thr = _lvnRatioPct / 100.0 * maxV;
 
+            var cand = new List<(decimal price, double vol)>();
             int i = 0;
             while (i < n)
             {
@@ -450,50 +464,9 @@ namespace ProfileLevels
                 if (leftMax <= mv || rightMax <= mv) continue;   // nur echte Taeler
 
                 decimal price = minP + (decimal)mn * tick;
-                AddLine(price, LevelKind.Lvn);
+                cand.Add((price, mv));
             }
-        }
-
-        // Standard-70%-Value-Area + vPOC aus dem aggregierten Histogramm.
-        private static void ComputeValueArea(Dictionary<decimal, decimal> hist,
-                                             out decimal vpoc, out decimal vah, out decimal val)
-        {
-            vpoc = vah = val = 0;
-            if (hist.Count == 0) return;
-
-            var prices = hist.Keys.OrderBy(p => p).ToList();
-            decimal total = hist.Values.Sum();
-
-            decimal maxVol = -1m; int pocIdx = 0;
-            for (int i = 0; i < prices.Count; i++)
-            {
-                var v = hist[prices[i]];
-                if (v > maxVol) { maxVol = v; pocIdx = i; }
-            }
-            vpoc = prices[pocIdx];
-
-            decimal target = total * 0.70m;
-            decimal acc = hist[prices[pocIdx]];
-            int lo = pocIdx, hi = pocIdx;
-            while (acc < target && (lo > 0 || hi < prices.Count - 1))
-            {
-                decimal volBelow = lo > 0 ? hist[prices[lo - 1]] : -1m;
-                decimal volAbove = hi < prices.Count - 1 ? hist[prices[hi + 1]] : -1m;
-                if (volAbove >= volBelow)
-                {
-                    if (hi < prices.Count - 1) { hi++; acc += hist[prices[hi]]; }
-                    else if (lo > 0) { lo--; acc += hist[prices[lo]]; }
-                    else break;
-                }
-                else
-                {
-                    if (lo > 0) { lo--; acc += hist[prices[lo]]; }
-                    else if (hi < prices.Count - 1) { hi++; acc += hist[prices[hi]]; }
-                    else break;
-                }
-            }
-            val = prices[lo];
-            vah = prices[hi];
+            AddNodesWithSeparation(cand, false, LevelKind.Lvn);
         }
 
         private void UpdateTickEstimate(IndicatorCandle c)
@@ -530,6 +503,9 @@ namespace ProfileLevels
                 return;
 
             var region = cont.Region;
+            int lastBar = CurrentBar - 1;
+            if (lastBar < 0)
+                return;
 
             foreach (var ln in _lines)
             {
@@ -540,8 +516,24 @@ namespace ProfileLevels
                 try { y = cont.GetYByPrice(ln.Price, false); }
                 catch { continue; }
 
+                int x1 = region.Left;          // HVN/LVN: volle Breite
+                int x2 = region.Right;
+
+                if (ln.OriginBar >= 0)
+                {
+                    // Naked POC: Ray ab dem Ursprungs-Bar nach rechts.
+                    try
+                    {
+                        int ob = Math.Min(Math.Max(ln.OriginBar, 0), lastBar);
+                        int xo = cont.GetXByBar(ob, false);
+                        if (xo > region.Right) continue;   // Ursprung rechts ausserhalb -> nichts sichtbar
+                        x1 = Math.Max(xo, region.Left);
+                    }
+                    catch { x1 = region.Left; }
+                }
+
                 var color = ColorOf(ln.Kind);
-                context.DrawLine(new RenderPen(color, _lineWidth), region.Left, y, region.Right, y);
+                context.DrawLine(new RenderPen(color, _lineWidth), x1, y, x2, y);
 
                 if (_showLabels)
                 {
@@ -549,7 +541,8 @@ namespace ProfileLevels
                     {
                         string label = LabelOf(ln.Kind);
                         var sz = context.MeasureString(label, _font);
-                        context.DrawString(label, _font, color, region.Left + 3, y - sz.Height - 1);
+                        int labelX = Math.Min(x1 + 3, region.Right - sz.Width - 3);
+                        context.DrawString(label, _font, color, labelX, y - sz.Height - 1);
                     }
                     catch { /* Label diesmal weglassen */ }
                 }
