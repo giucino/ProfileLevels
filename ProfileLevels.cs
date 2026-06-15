@@ -22,6 +22,8 @@ namespace ProfileLevels
         // ─────────────────────────────────────────────────────────────────
         //  EINSTELLUNGEN — Profil
         // ─────────────────────────────────────────────────────────────────
+        private WorkMode _mode = WorkMode.Master;
+        private ProfileScope _scope = ProfileScope.LastSessions;
         private int _sessions = 5;             // Composite ueber die letzten N Trading-Days (inkl. heute)
         private int _hvnRatioPct = 70;         // HVN-Schwelle als % des Profil-Maximums
         private int _lvnRatioPct = 20;         // LVN-Schwelle als % des Profil-Maximums
@@ -56,13 +58,26 @@ namespace ProfileLevels
         // ─────────────────────────────────────────────────────────────────
         private enum LevelKind { Hvn, Lvn, NakedPoc }
 
+        public enum ProfileScope
+        {
+            [Display(Name = "Letzte N Sessions")] LastSessions,
+            [Display(Name = "Ganzer Chart")] EntireChart
+        }
+
+        public enum WorkMode
+        {
+            [Display(Name = "Master (rechnet + sendet)")] Master,
+            [Display(Name = "Slave (empfaengt + zeichnet)")] Slave
+        }
+
         private readonly struct Line
         {
             public readonly decimal Price;
             public readonly LevelKind Kind;
             public readonly int OriginBar;   // -1 = volle Breite (HVN/LVN); sonst Ray ab diesem Bar (nPOC)
-            public Line(decimal price, LevelKind kind, int originBar = -1)
-            { Price = price; Kind = kind; OriginBar = originBar; }
+            public readonly string? Label;   // optionales Label (sonst Standard je Kind)
+            public Line(decimal price, LevelKind kind, int originBar = -1, string? label = null)
+            { Price = price; Kind = kind; OriginBar = originBar; Label = label; }
         }
 
         // Naked/Virgin POC: POC eines abgeschlossenen Tages, der seither nicht beruehrt wurde.
@@ -79,7 +94,7 @@ namespace ProfileLevels
         private readonly List<Dictionary<decimal, decimal>> _history = new();
         private Dictionary<decimal, decimal> _current = new();
         private DateTime _curDate = DateTime.MinValue;
-        private int _curSessionStartBar = -1;   // Bar, an dem die aktuelle Session begann
+        private readonly Dictionary<decimal, decimal> _entireProfile = new();  // alle Bars (EntireChart-Modus)
 
         private readonly List<NakedPoc> _nakedPocs = new();
         private readonly List<Line> _lines = new();
@@ -92,10 +107,22 @@ namespace ProfileLevels
         // ─────────────────────────────────────────────────────────────────
         //  PROPERTIES — Profil
         // ─────────────────────────────────────────────────────────────────
+        [Display(Name = "Modus", GroupName = "Modus", Order = 1,
+            Description = "Master: rechnet das Profil (auf dem Daily-Chart) und SENDET die Levels an alle Slaves " +
+                          "desselben Instruments. Slave: rechnet nichts, ZEIGT die vom Master gesendeten Levels " +
+                          "(auf deinem Trading-Chart, z.B. 15-Min/Tick). Ein Master-Chart muss offen sein.")]
+        public WorkMode Mode { get => _mode; set { _mode = value; RecalculateValues(); } }
+
+        [Display(Name = "Profil-Bezug", GroupName = "Profil", Order = 0,
+            Description = "Worueber das Volumenprofil gerechnet wird. 'Letzte N Sessions' = die letzten N Trading-Days " +
+                          "(Property Sessions). 'Ganzer Chart' = ALLE geladenen Bars -> fuer Daily-Charts mit langer " +
+                          "Historie (Big-Picture-S/R). Empfohlen: Daily-Chart + Ganzer Chart.")]
+        public ProfileScope Scope { get => _scope; set { _scope = value; RecalculateValues(); } }
+
         [Display(Name = "Sessions (Composite-Tage)", GroupName = "Profil", Order = 1,
-            Description = "Ueber so viele Kalendertage (inkl. heute) wird das Volumenprofil zusammengefasst. " +
-                          "Mehr = groessere, traegere Zonen.")]
-        [Range(1, 60)]
+            Description = "Nur bei Bezug 'Letzte N Sessions': ueber so viele Trading-Days wird das Profil " +
+                          "zusammengefasst. Mehr = groessere, traegere Zonen.")]
+        [Range(1, 2000)]
         public int Sessions { get => _sessions; set { _sessions = Math.Max(1, value); RecalculateValues(); } }
 
         [Display(Name = "HVN-Schwelle (% vom Max)", GroupName = "Profil", Order = 2,
@@ -213,6 +240,13 @@ namespace ProfileLevels
         // ─────────────────────────────────────────────────────────────────
         protected override void OnCalculate(int bar, decimal value)
         {
+            // Slave rechnet nichts -> zeichnet nur die vom Master gesendeten Levels.
+            if (_mode == WorkMode.Slave)
+            {
+                if (bar == CurrentBar - 1) RedrawChart();
+                return;
+            }
+
             if (bar == 0)
                 ResetState();
 
@@ -237,10 +271,10 @@ namespace ProfileLevels
         {
             _history.Clear();
             _current = new Dictionary<decimal, decimal>();
+            _entireProfile.Clear();
             _curDate = DateTime.MinValue;
             _nakedPocs.Clear();
             _lines.Clear();
-            _curSessionStartBar = -1;
             _lastProcessedBar = -1;
             _tickEstimate = 0m;
         }
@@ -254,7 +288,7 @@ namespace ProfileLevels
             if (_tickEstimate <= 0m)
                 UpdateTickEstimate(c);
 
-            // Tageswechsel -> aktuelles Tagesprofil einfrieren.
+            // Tageswechsel -> abgeschlossenes Tagesprofil ins Composite (fuer HVN/LVN).
             var date = SessionDate(c.Time);
             if (date != _curDate)
             {
@@ -263,38 +297,40 @@ namespace ProfileLevels
                     _history.Add(_current);
                     while (_history.Count > _sessions - 1)
                         _history.RemoveAt(0);
-
-                    // POC des abgeschlossenen Tages -> Naked-POC-Kandidat (noch unberuehrt).
-                    decimal dayPoc = PocOf(_current);
-                    if (dayPoc > 0m)
-                    {
-                        // Ursprung = LETZTER Bar der Session, dessen Range den POC einschloss
-                        // -> der Ray startet dort, wo der Preis zuletzt auf dem POC war
-                        // (nicht am Session-Schluss, der an Trendtagen weit weg liegt).
-                        int origin = FindPocOriginBar(_curSessionStartBar, bar - 1, dayPoc);
-                        _nakedPocs.Add(new NakedPoc(dayPoc, _curDate, origin));
-                        while (_nakedPocs.Count > _maxNakedPocs)
-                            _nakedPocs.RemoveAt(0);
-                    }
                 }
                 _current = new Dictionary<decimal, decimal>();
                 _curDate = date;
-                _curSessionStartBar = bar;
             }
 
-            // Footprint in das aktuelle Tagesprofil aggregieren.
+            // Footprint aggregieren: ins Tagesprofil (Letzte-N-Sessions) UND ins
+            // Gesamtprofil (Ganzer Chart). Der Recompute waehlt dann je nach Bezug.
             bool any = false;
             foreach (var pv in c.GetAllPriceLevels())
             {
                 any = true;
                 _current[pv.Price] = (_current.TryGetValue(pv.Price, out var v) ? v : 0m) + pv.Volume;
+                _entireProfile[pv.Price] = (_entireProfile.TryGetValue(pv.Price, out var ev) ? ev : 0m) + pv.Volume;
             }
             if (!any && c.Volume > 0m)
+            {
                 _current[c.Close] = (_current.TryGetValue(c.Close, out var v2) ? v2 : 0m) + c.Volume;
+                _entireProfile[c.Close] = (_entireProfile.TryGetValue(c.Close, out var ev2) ? ev2 : 0m) + c.Volume;
+            }
 
-            // Naked POCs, die dieser (spaetere) Bar preislich beruehrt, sind getestet -> entfernen.
+            // --- Naked POC pro BAR (z.B. 15-Min-Kerze) ---
+            // 1) Bestehende nPOCs FRUEHERER Bars, die DIESER Bar preislich beruehrt,
+            //    sind getestet/gefuellt -> entfernen.
             if (_nakedPocs.Count > 0)
-                _nakedPocs.RemoveAll(np => np.Date < date && c.Low <= np.Price && np.Price <= c.High);
+                _nakedPocs.RemoveAll(np => np.OriginBar < bar && c.Low <= np.Price && np.Price <= c.High);
+
+            // 2) POC DIESES Bars als neuer nPOC-Kandidat (Ray ab diesem Bar).
+            decimal barPoc = BarPoc(c);
+            if (barPoc > 0m)
+            {
+                _nakedPocs.Add(new NakedPoc(barPoc, c.Time, bar));
+                while (_nakedPocs.Count > _maxNakedPocs)
+                    _nakedPocs.RemoveAt(0);
+            }
         }
 
         // ─────────────────────────────────────────────────────────────────
@@ -304,31 +340,50 @@ namespace ProfileLevels
         {
             _lines.Clear();
 
-            var comp = new Dictionary<decimal, decimal>();
-            foreach (var dp in _history)
-                foreach (var kv in dp)
-                    comp[kv.Key] = (comp.TryGetValue(kv.Key, out var v) ? v : 0m) + kv.Value;
-            foreach (var kv in _current)
-                comp[kv.Key] = (comp.TryGetValue(kv.Key, out var v2) ? v2 : 0m) + kv.Value;
+            // Composite je nach Bezug: ganzer Chart (alle Bars) oder letzte N Sessions.
+            Dictionary<decimal, decimal> comp;
+            if (_scope == ProfileScope.EntireChart)
+            {
+                comp = _entireProfile;
+            }
+            else
+            {
+                comp = new Dictionary<decimal, decimal>();
+                foreach (var dp in _history)
+                    foreach (var kv in dp)
+                        comp[kv.Key] = (comp.TryGetValue(kv.Key, out var v) ? v : 0m) + kv.Value;
+                foreach (var kv in _current)
+                    comp[kv.Key] = (comp.TryGetValue(kv.Key, out var v2) ? v2 : 0m) + kv.Value;
+            }
 
             if (comp.Count < 5)
                 return;
 
             // Kontinuierliches, geglaettetes Profil fuer HVN/LVN.
+            // ADAPTIVES BINNING: bei sehr grosser Range (z.B. Daily ueber 1000 Tage)
+            // wird die Bin-Groesse vergroessert, damit das Array klein/schnell bleibt.
             decimal tick = _tickEstimate > 0m ? _tickEstimate : InferTick(comp.Keys);
             decimal minP = comp.Keys.Min();
             decimal maxP = comp.Keys.Max();
+            const int maxBins = 4000;
+            decimal bin = tick;
+            if (bin > 0m)
+            {
+                int rawN = (int)Math.Round((double)((maxP - minP) / bin)) + 1;
+                if (rawN > maxBins)
+                    bin = tick * (int)Math.Ceiling((double)rawN / maxBins);
+            }
             double[]? sm = null;
             int n = 0;
-            if (tick > 0m)
+            if (bin > 0m)
             {
-                n = (int)Math.Round((double)((maxP - minP) / tick)) + 1;
-                if (n >= 5 && n <= 20000)
+                n = (int)Math.Round((double)((maxP - minP) / bin)) + 1;
+                if (n >= 5 && n <= maxBins + 2)
                 {
                     var vol = new double[n];
                     foreach (var kv in comp)
                     {
-                        int idx = (int)Math.Round((double)((kv.Key - minP) / tick));
+                        int idx = (int)Math.Round((double)((kv.Key - minP) / bin));
                         if (idx >= 0 && idx < n) vol[idx] += (double)kv.Value;
                     }
                     int w = _smoothing;
@@ -348,34 +403,39 @@ namespace ProfileLevels
             // (ohne Neuberechnung). Reihenfolge = Zeichen-Reihenfolge (Wichtiges zuletzt).
             if (sm != null)
             {
-                AddLvnLines(sm, n, minP, tick);
-                AddHvnLines(sm, n, minP, tick);
+                AddLvnLines(sm, n, minP, bin);
+                AddHvnLines(sm, n, minP, bin);
             }
             // Naked POCs: KEIN Mindestabstand - jeder unberuehrte POC ist ein eigenes Level.
             foreach (var np in _nakedPocs)
-                _lines.Add(new Line(np.Price, LevelKind.NakedPoc, np.OriginBar));   // Ray ab Ursprung
+                _lines.Add(new Line(np.Price, LevelKind.NakedPoc, np.OriginBar));   // Ray ab dem Bar, der den POC druckte
+
+            // An alle Slaves desselben Instruments senden (nur Preis + Typ).
+            PublishToBus();
         }
 
-        private static decimal PocOf(Dictionary<decimal, decimal> hist)
+        private string InstrumentKey()
+        {
+            var sym = InstrumentInfo?.Instrument;
+            return string.IsNullOrEmpty(sym) ? "default" : sym;
+        }
+
+        private void PublishToBus()
+        {
+            var list = new List<SharedLevel>(_lines.Count);
+            foreach (var ln in _lines)
+                list.Add(new SharedLevel(ln.Price, (int)ln.Kind));
+            ProfileLevelsBus.Publish(InstrumentKey(), list);
+        }
+
+        // POC eines einzelnen Bars = Preis-Level mit dem groessten Volumen im Footprint.
+        private static decimal BarPoc(IndicatorCandle c)
         {
             decimal poc = 0m, maxVol = -1m;
-            foreach (var kv in hist)
-                if (kv.Value > maxVol) { maxVol = kv.Value; poc = kv.Key; }
+            foreach (var pv in c.GetAllPriceLevels())
+                if (pv.Volume > maxVol) { maxVol = pv.Volume; poc = pv.Price; }
+            if (maxVol < 0m && c.Volume > 0m) poc = c.Close;   // Fallback ohne Footprint-Daten
             return poc;
-        }
-
-        // Letzter Bar im Bereich [startBar, endBar], dessen High/Low den POC-Preis
-        // einschloss -> dort war der Preis zuletzt auf dem POC (Ray-Start des nPOC).
-        private int FindPocOriginBar(int startBar, int endBar, decimal poc)
-        {
-            if (startBar < 0) startBar = 0;
-            for (int b = endBar; b >= startBar; b--)
-            {
-                var cc = GetCandle(b);
-                if (cc != null && cc.Low <= poc && poc <= cc.High)
-                    return b;
-            }
-            return endBar;   // Fallback: Session-Schluss
         }
 
         // Ordnet einen Zeitpunkt dem Trading-Day zu, der bei der Tagesgrenze beginnt.
@@ -516,17 +576,36 @@ namespace ProfileLevels
         // ─────────────────────────────────────────────────────────────────
         protected override void OnRender(RenderContext context, DrawingLayouts layout)
         {
-            if (_font == null || _lines.Count == 0)
+            if (_font == null)
                 return;
             if (ChartInfo?.PriceChartContainer is not { } cont)
                 return;
+
+            // Quelle der Linien: Master = eigene Berechnung, Slave = Bus (vom Master gesendet).
+            IReadOnlyList<Line> source;
+            if (_mode == WorkMode.Slave)
+            {
+                var shared = ProfileLevelsBus.Get(InstrumentKey());
+                if (shared == null || shared.Count == 0)
+                    return;
+                var tmp = new List<Line>(shared.Count);
+                foreach (var sl in shared)
+                    tmp.Add(new Line(sl.Price, (LevelKind)sl.Kind));   // origin = -1 -> volle Breite
+                source = tmp;
+            }
+            else
+            {
+                if (_lines.Count == 0)
+                    return;
+                source = _lines;
+            }
 
             var region = cont.Region;
             int lastBar = CurrentBar - 1;
             if (lastBar < 0)
                 return;
 
-            foreach (var ln in _lines)
+            foreach (var ln in source)
             {
                 if (!IsVisible(ln.Kind))
                     continue;
@@ -558,7 +637,7 @@ namespace ProfileLevels
                 {
                     try
                     {
-                        string label = LabelOf(ln.Kind);
+                        string label = ln.Label ?? LabelOf(ln.Kind);
                         var sz = context.MeasureString(label, _font);
                         // Label rechts (knapp vor der Preisachse).
                         int labelX = region.Right - sz.Width - 3;
@@ -567,6 +646,34 @@ namespace ProfileLevels
                     catch { /* Label diesmal weglassen */ }
                 }
             }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Cross-Chart-Bus: Master veroeffentlicht Levels, Slave liest sie.
+    //  Alle ATAS-Indikatoren laufen im selben Prozess -> static reicht.
+    // ─────────────────────────────────────────────────────────────────────
+    internal readonly struct SharedLevel
+    {
+        public readonly decimal Price;
+        public readonly int Kind;   // 0=Hvn, 1=Lvn, 2=NakedPoc
+        public SharedLevel(decimal price, int kind) { Price = price; Kind = kind; }
+    }
+
+    internal static class ProfileLevelsBus
+    {
+        private static readonly object _lock = new();
+        private static readonly Dictionary<string, List<SharedLevel>> _store = new();
+
+        public static void Publish(string key, List<SharedLevel> levels)
+        {
+            lock (_lock) _store[key] = levels;
+        }
+
+        public static List<SharedLevel>? Get(string key)
+        {
+            lock (_lock)
+                return _store.TryGetValue(key, out var v) ? new List<SharedLevel>(v) : null;
         }
     }
 }
